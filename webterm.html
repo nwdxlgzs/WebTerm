@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <title>WebTerm</title>
+    <style>
+        body {
+            font-family: monospace;
+            background-color: #000000;
+            color: rgb(255, 255, 255);
+            padding: 20px;
+        }
+
+        .cmd-line {
+            display: flex;
+            font: 1em sans-serif;
+        }
+
+        .cmd-line>span {
+            margin-right: 5px;
+        }
+
+        .cmd-input {
+            flex: 1;
+            border: none;
+            background: none;
+            color: inherit;
+            font: inherit;
+            outline: none;
+            white-space: pre;
+        }
+
+        .cmd-warn {
+            color: #ffff00;
+        }
+
+        .cmd-success {
+            color: #ffffff;
+        }
+
+        .cmd-error {
+            color: #ff0000;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="cmd-container">
+        <div class="cmd-line">
+            <span>欢迎使用WebTerm功能，本终端将在线输入的SQL语句于数据库中执行查询，请注意使用时不要写错语句。</span>
+        </div>
+        <div class="cmd-line">
+            <span>WebTerm为简易实现，并未使用任何库，程序报错返回错误色</span>
+            <span class="cmd-error">[红色]</span>
+            <span>警告色</span>
+            <span class="cmd-warn">[黄色]</span>
+            <span>正常与成功色</span>
+            <span class="cmd-success">[白色]</span>
+        </div>
+        <div class="cmd-line">
+            <span>部分危险语句即使正常执行也会标记为</span> <span class="cmd-warn">[警告色]</span>
+        </div>
+        <div class="cmd-line">
+            <span>WebTerm支持多行输入，只需Shift+Enter即可换行，支持按上下键回溯输入内容。</span>
+        </div>
+        <div class="cmd-line">
+            <span id="pretext"></span>
+        </div>
+        <div class="cmd-line">
+            <span>></span>
+            <div class="cmd-input" contenteditable="true"></div>
+        </div>
+    </div>
+    <script src="./comweb.js"></script>
+    <script>
+        let datetime = new Date();
+        let year = datetime.getFullYear();
+        let month = datetime.getMonth() + 1;
+        let day = datetime.getDate();
+        let hour = datetime.getHours();
+        let minute = datetime.getMinutes();
+        let second = datetime.getSeconds();
+        document.getElementById('pretext').innerText = "本次启动于" + year + "-" + month + "-" + day + " " + hour + ":" + minute + ":" + second;
+        let inputs = [];
+        let lastinput = "";
+        let arrowidx = -1;
+        let lastnewinput = document.querySelector('.cmd-input');
+        document.addEventListener('DOMContentLoaded', () => {
+            const cmdContainer = document.getElementById('cmd-container');
+            function setCaretAtEnd(elem) {
+                const range = document.createRange();
+                const sel = window.getSelection();
+                range.selectNodeContents(elem);
+                range.collapse(false);
+                sel.removeAllRanges();
+                sel.addRange(range);
+                elem.focus();
+            }
+            cmdContainer.addEventListener('keydown', (e) => {
+                if (e.target.classList.contains('cmd-input')) {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        const inputLine = e.target.innerText;
+                        executeCommand(inputLine);
+                    } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        if (inputs.length > 0) {
+                            if (arrowidx == -1) {
+                                lastinput = e.target.innerText || "";
+                                arrowidx = inputs.length;
+                            }
+                            if (arrowidx == 0) { arrowidx = 1; }
+                            arrowidx = arrowidx - 1;
+                            e.target.innerText = inputs[arrowidx];
+                            setCaretAtEnd(e.target);
+                        }
+                    } else if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        if (arrowidx != -1 && inputs.length > 0) {
+                            if (arrowidx == inputs.length - 1) {
+                                e.target.innerText = lastinput;
+                                arrowidx = -1;
+                            } else {
+                                arrowidx = arrowidx + 1;
+                                e.target.innerText = inputs[arrowidx];
+                            }
+                            setCaretAtEnd(e.target);
+                        }
+                    }
+
+
+                }
+            });
+            lastnewinput.focus();
+            document.addEventListener('click', (e) => {
+                lastnewinput.focus();
+            });
+            function isDangerousSQL(sql) {
+                const dangerousKeywords = ['DROP', 'DELETE', 'UPDATE', 'ALTER', 'CREATE', 'TRUNCATE'];
+                const hasDangerousKeyword = dangerousKeywords.some(keyword => sql.toUpperCase().includes(keyword));
+                const hasUnsafeInput = sql.includes('--') || sql.includes(';');
+                return hasDangerousKeyword || hasUnsafeInput;
+            }
+            async function sqlRun(query) {
+                const response = await fetch('/webterm/exec', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        token: getToken(),
+                        query: query
+                    })
+                });
+                const result = await response.json();
+                if (result.status != 1) {
+                    return ['Warn', result.msg];
+                } else {
+                    if (result.success) {
+                        if (isDangerousSQL(query)) {
+                            return ['Warn', JSON.stringify(result.msg, null, 4)];
+                        } else {
+                            return ['Success', JSON.stringify(result.msg, null, 4)];
+                        }
+                    } else {
+                        return ['Error', result.msg];
+                    }
+                }
+            }
+            async function executeCommand(inputLine) {
+                inputs.push(inputLine);
+                const currentInput = document.querySelector('.cmd-input');
+                currentInput.contentEditable = 'false';
+                const outputLine = document.createElement('div');
+                outputLine.classList.add('cmd-line');
+                const output = await sqlRun(inputLine);
+                console.log(output);
+                if (output[0] === 'Warn') {
+                    outputLine.innerHTML = '<div class="cmd-input cmd-warn">' + output[1] + '</div>';
+                } else if (output[0] === 'Success') {
+                    outputLine.innerHTML = '<div class="cmd-input cmd-success">' + output[1] + '</div>';
+                } else if (output[0] === 'Error') {
+                    outputLine.innerHTML = '<div class="cmd-input cmd-error">' + output[1] + '</div>';
+                } else {
+                    outputLine.innerHTML = '<div class="cmd-input">' + output[1] + '</div>';
+                }
+                cmdContainer.appendChild(outputLine);
+                const newCmdLine = document.createElement('div');
+                newCmdLine.classList.add('cmd-line');
+                newCmdLine.innerHTML = '<span>></span><div class="cmd-input" contenteditable="true"></div>';
+                cmdContainer.appendChild(newCmdLine);
+                lastnewinput = newCmdLine.querySelector('.cmd-input');
+                lastnewinput.focus();
+                lastinput = "";
+                arrowidx = -1;
+            }
+        });
+    </script>
+</body>
+
+</html>
